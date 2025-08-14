@@ -17,7 +17,7 @@ interface Personality {
 interface Message {
   role: 'user' | 'model'; // Corresponds to Gemini API roles
   parts: { text: string }[];
-  sender: 'AI 1' | 'AI 2' | 'System';
+  sender: 'AI 1' | 'AI 2' | 'Player' | 'System';
   responseTime?: number; // in milliseconds
   retries?: number;
 }
@@ -73,6 +73,7 @@ export default function Home() {
   const [isClient, setIsClient] = useState(false);
   const [models, setModels] = useState<Model[]>([]);
   const [topic, setTopic] = useState('');
+  const [debateMode, setDebateMode] = useState<'ai-vs-ai' | 'ai-vs-player'>('ai-vs-ai');
   const [ai1, setAi1] = useState<AIConfig>({ model: '', personality: PERSONALITY_PRESETS[0].prompt, customPrompt: '', finalPrompt: PERSONALITY_PRESETS[0].prompt });
   const [ai2, setAi2] = useState<AIConfig>({ model: '', personality: PERSONALITY_PRESETS[1].prompt, customPrompt: '', finalPrompt: PERSONALITY_PRESETS[1].prompt });
   const [judgeModel, setJudgeModel] = useState('gemini-1.5-pro-latest');
@@ -84,6 +85,8 @@ export default function Home() {
   const [thinkingDots, setThinkingDots] = useState('.');
   const [isJudging, setIsJudging] = useState(false);
   const [judgment, setJudgment] = useState<string | null>(null);
+  const [playerMessage, setPlayerMessage] = useState('');
+  const [waitingForPlayer, setWaitingForPlayer] = useState(false);
   
   const chatLogRef = useRef<HTMLDivElement>(null);
   const stopDebateRef = useRef(false);
@@ -143,9 +146,140 @@ export default function Home() {
     stopDebateRef.current = true;
   };
 
+  const handlePlayerMessage = async () => {
+    const newMessage: Message = {
+      role: 'user',
+      parts: [{ text: playerMessage }],
+      sender: 'Player'
+    };
+    setPlayerMessage('');
+    setWaitingForPlayer(false);
+    setIsLoading(true);
+    
+    setChatHistory(prev => {
+      const updatedHistory = [...prev, newMessage];
+      // AIの応答を非同期で取得
+      getAIResponse(updatedHistory);
+      return updatedHistory;
+    });
+  };
+
+  const getAIResponse = async (currentChatHistory: Message[]) => {
+    try {
+      setThinkingAI('AI 1');
+      
+      // システムメッセージを除いた会話履歴を準備
+      const historyForApi = currentChatHistory
+        .filter(msg => msg.sender !== 'System')
+        .slice(-HISTORY_WINDOW_SIZE)
+        .map(({role, parts}) => ({role, parts}));
+      
+      // AIに反論を求める
+      const counterPrompt = `これに対して、あなたの反論を日本語で150文字程度にまとめて述べてください。${emotionalConstraint}`;
+      historyForApi.push({ role: 'user', parts: [{ text: counterPrompt }] });
+
+      const startTime = Date.now();
+      const response = await fetchWithRetry('/api/debate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: ai1.model,
+          systemPrompt: ai1.finalPrompt,
+          history: historyForApi,
+        }),
+      });
+      const duration = Date.now() - startTime;
+
+      if (!response.ok) {
+        const errData = await response.json();
+        throw new Error(errData.details || errData.error || 'APIエラーが発生しました。');
+      }
+
+      const data = await response.json();
+      setThinkingAI(null);
+      
+      const aiMessage: Message = { 
+        role: 'model', 
+        parts: [{ text: data.text }], 
+        sender: 'AI 1', 
+        responseTime: duration, 
+        retries: data.retries 
+      };
+      
+      setChatHistory(prev => [...prev, aiMessage]);
+      
+      // 次のプレイヤーターンを待つ
+      setWaitingForPlayer(true);
+      setIsLoading(false);
+      
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'AIの応答取得中にエラーが発生しました。');
+      setIsLoading(false);
+      setThinkingAI(null);
+    }
+  };
+
+  const handleEndPlayerDebate = async () => {
+    setWaitingForPlayer(false);
+    setIsLoading(false);
+    
+    // 審判による判定を開始
+    await startJudgment();
+  };
+
+  const startJudgment = async () => {
+    setChatHistory(prev => {
+      if (prev.length > 1) {
+        setIsJudging(true);
+        performJudgment(prev);
+      }
+      return prev;
+    });
+  };
+
+  const performJudgment = async (chatHistory: Message[]) => {
+    try {
+      const debateContent = chatHistory
+        .filter(m => m.sender !== 'System')
+        .map(m => {
+          const senderName = m.sender === 'Player' ? 'プレイヤー' : m.sender;
+          return `${senderName}: ${m.parts[0].text}`;
+        })
+        .join('\n\n');
+        
+      const judgePrompt = debateMode === 'ai-vs-player'
+        ? `あなたは公平な審判です。以下のAIとプレイヤーの討論について、最終的な判定を下してください。\n\n1. まず、AIとプレイヤーのそれぞれの主張の要点を簡潔にまとめてください。\n2. 次に、議論の論理性、説得力、一貫性を評価してください。\n3. 最後に、これらの評価に基づいて、どちらが勝利したかを宣言し、その理由を明確に説明してください。\n\n---\n[討論の履歴]\n${debateContent}\n---\n`
+        : `あなたは公平な審判です。以下のAI同士の討論について、最終的な判定を下してください。\n\n1. まず、AI 1とAI 2のそれぞれの主張の要点を簡潔にまとめてください。\n2. 次に、議論の論理性、説得力、一貫性を評価してください。\n3. 最後に、これらの評価に基づいて、どちらのAIが勝利したかを宣言し、その理由を明確に説明してください。\n\n---\n[討論の履歴]\n${debateContent}\n---\n`;
+
+      const response = await fetchWithRetry('/api/debate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: judgeModel,
+          systemPrompt: 'あなたは公平で、客観的な審判です。',
+          history: [{ role: 'user', parts: [{ text: judgePrompt }] }],
+        }),
+      });
+
+      if (!response.ok) {
+        const errData = await response.json();
+        throw new Error(errData.details || '判定の取得に失敗しました。');
+      }
+
+      const data = await response.json();
+      setJudgment(data.text);
+
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '判定の生成中にエラーが発生しました。');
+    } finally {
+      setIsJudging(false);
+    }
+  };
+
   const handleStartDebate = async () => {
-    if (!topic || !ai1.model || !ai2.model || !judgeModel || !ai1.finalPrompt || !ai2.finalPrompt) {
-      setError('議題、両AIのモデル、審判AIのモデル、および両AIの性格設定をすべて入力してください。');
+    const requiredAI2 = debateMode === 'ai-vs-ai';
+    if (!topic || !ai1.model || (requiredAI2 && !ai2.model) || !judgeModel || !ai1.finalPrompt || (requiredAI2 && !ai2.finalPrompt)) {
+      setError(`議題、AIのモデル${requiredAI2 ? '（両方）' : ''}、審判AIのモデル、およびAIの性格設定をすべて入力してください。`);
       return;
     }
 
@@ -153,6 +287,7 @@ export default function Home() {
     setError(null);
     setChatHistory([]);
     setJudgment(null);
+    setWaitingForPlayer(false);
     stopDebateRef.current = false;
     
     const initialPrompt = `これから討論を始めます。議題は「${topic}」です。あなたの最初の意見を、日本語で150文字程度にまとめて述べてください。${emotionalConstraint}`;
@@ -162,6 +297,67 @@ export default function Home() {
         { role: 'user', parts: [{ text: initialPrompt }], sender: 'System' }
     ];
 
+    if (debateMode === 'ai-vs-player') {
+      await runPlayerDebate(currentHistory);
+    } else {
+      await runAIDebate(currentHistory);
+    }
+  };
+
+  const runPlayerDebate = async (currentHistory: Message[]) => {
+    try {
+      // AI先手で開始
+      setThinkingAI('AI 1');
+      
+      let historyForApi = currentHistory.slice(-HISTORY_WINDOW_SIZE);
+      if (historyForApi.length > 0 && historyForApi[0].role === 'model') {
+        historyForApi = historyForApi.slice(1);
+      }
+
+      const startTime = Date.now();
+      const response = await fetchWithRetry('/api/debate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: ai1.model,
+          systemPrompt: ai1.finalPrompt,
+          history: historyForApi.map(({role, parts}) => ({role, parts})),
+        }),
+      });
+      const duration = Date.now() - startTime;
+
+      if (!response.ok) {
+        const errData = await response.json();
+        throw new Error(errData.details || errData.error || 'APIエラーが発生しました。');
+      }
+
+      const data = await response.json();
+      setThinkingAI(null);
+      const aiMessage: Message = { 
+        role: 'model', 
+        parts: [{ text: data.text }], 
+        sender: 'AI 1', 
+        responseTime: duration, 
+        retries: data.retries 
+      };
+      
+      currentHistory.push(aiMessage);
+      setChatHistory(prev => [...prev, aiMessage]);
+      
+      // プレイヤーのターンを待つ
+      setWaitingForPlayer(true);
+      setIsLoading(false);
+      
+      // プレイヤーターン後の処理は handlePlayerMessage で継続される
+      
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '討論中に不明なエラーが発生しました。');
+      setIsLoading(false);
+      setThinkingAI(null);
+    }
+  };
+
+  const runAIDebate = async (currentHistory: Message[]) => {
     try {
       for (let i = 0; i < MAX_TURNS * 2; i++) {
         if (stopDebateRef.current) {
@@ -219,34 +415,8 @@ export default function Home() {
       setThinkingAI(null);
 
       if (currentHistory.length > 1) {
-        try {
-          setIsJudging(true);
-          const debateContent = currentHistory.filter(m => m.sender !== 'System').map(m => `${m.sender}: ${m.parts[0].text}`).join('\n\n');
-          const judgePrompt = `あなたは公平な審判です。以下のAI同士の討論について、最終的な判定を下してください.\n\n1. まず、AI 1とAI 2のそれぞれの主張の要点を簡潔にまとめてください。\n2. 次に、議論の論理性、説得力、一貫性を評価してください。\n3. 最後に、これらの評価に基づいて、どちらのAIが勝利したかを宣言し、その理由を明確に説明してください。\n\n---\n[討論の履歴]\n${debateContent}\n---\n`
-
-          const response = await fetchWithRetry('/api/debate', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              model: judgeModel,
-              systemPrompt: 'あなたは公平で、客観的な審判です。',
-              history: [{ role: 'user', parts: [{ text: judgePrompt }] }],
-            }),
-          });
-
-          if (!response.ok) {
-            const errData = await response.json();
-            throw new Error(errData.details || '判定の取得に失敗しました。');
-          }
-
-          const data = await response.json();
-          setJudgment(data.text);
-
-        } catch (err) {
-          setError(err instanceof Error ? err.message : '判定の生成中にエラーが発生しました。');
-        } finally {
-          setIsJudging(false);
-        }
+        setIsJudging(true);
+        performJudgment(currentHistory);
       }
     }
   };
@@ -257,6 +427,13 @@ export default function Home() {
         <Card.Body>
           <Card.Title as="h1" className="text-center mb-4">AI 討論アリーナ</Card.Title>
           {error && <Alert variant="danger" onClose={() => setError(null)} dismissible>{error}</Alert>}
+          <Form.Group className="mb-3">
+            <Form.Label htmlFor="debate-mode">討論モード</Form.Label>
+            <Form.Select id="debate-mode" value={debateMode} onChange={e => setDebateMode(e.target.value as 'ai-vs-ai' | 'ai-vs-player')} disabled={isLoading || isJudging}>
+              <option value="ai-vs-ai">AI vs AI</option>
+              <option value="ai-vs-player">AI vs プレイヤー</option>
+            </Form.Select>
+          </Form.Group>
           <Form.Group className="mb-3">
             <Form.Label htmlFor="debate-topic">討論の議題</Form.Label>
             <Form.Control id="debate-topic" type="text" placeholder="例：人工知能は人類にとって有益か？" value={topic} onChange={e => setTopic(e.target.value)} disabled={isLoading || isJudging} />
@@ -271,10 +448,13 @@ export default function Home() {
       </Card>
 
       <Row>
-        {[ { id: 'ai1', config: ai1, setter: setAi1 }, { id: 'ai2', config: ai2, setter: setAi2 } ].map(({ id, config }) => (
-          <Col md={6} className="mb-4" key={id}>
+        {(debateMode === 'ai-vs-ai' 
+          ? [ { id: 'ai1', config: ai1, setter: setAi1, title: 'AI 1' }, { id: 'ai2', config: ai2, setter: setAi2, title: 'AI 2' } ]
+          : [ { id: 'ai1', config: ai1, setter: setAi1, title: 'AI' } ]
+        ).map(({ id, config, title }) => (
+          <Col md={debateMode === 'ai-vs-ai' ? 6 : 12} className="mb-4" key={id}>
             <Card>
-              <Card.Header as="h5" className="text-center text-capitalize">{id.replace('ai', 'AI ')}</Card.Header>
+              <Card.Header as="h5" className="text-center">{title}</Card.Header>
               <Card.Body>
                 <Form.Group className="mb-3">
                   <Form.Label htmlFor={`${id}-model`}>モデル</Form.Label>
@@ -318,12 +498,12 @@ export default function Home() {
           {chatHistory.length === 0 && !isLoading && <p className="text-muted">討論を開始すると、ここに内容が表示されます。</p>}
           {isLoading && chatHistory.length <= 1 && <div className="text-center"><Spinner animation="grow" /> <p>討論を開始しています...</p></div>}
           {chatHistory.map((msg, index) => (
-            <div key={index} className={`mb-3 d-flex ${msg.sender === 'AI 1' ? 'justify-content-start' : msg.sender === 'AI 2' ? 'justify-content-end' : 'justify-content-center'}`}>
+            <div key={index} className={`mb-3 d-flex ${msg.sender === 'AI 1' ? 'justify-content-start' : msg.sender === 'AI 2' ? 'justify-content-end' : msg.sender === 'Player' ? 'justify-content-end' : 'justify-content-center'}`}>
               {msg.sender === 'System' ? (
                 <Badge bg="secondary">{msg.parts[0].text}</Badge>
               ) : (
                 <Card style={{ width: '80%' }}>
-                  <Card.Header as="strong" className={`${msg.sender === 'AI 1' ? 'bg-primary text-white' : 'bg-success text-white'} d-flex justify-content-between align-items-center`}>
+                  <Card.Header as="strong" className={`${msg.sender === 'AI 1' ? 'bg-primary text-white' : msg.sender === 'Player' ? 'bg-warning text-dark' : 'bg-success text-white'} d-flex justify-content-between align-items-center`}>
                     <span>{msg.sender}</span>
                     <div className="d-flex align-items-center">
                       {msg.responseTime != null && (
@@ -351,6 +531,50 @@ export default function Home() {
           )}
         </Card.Body>
       </Card>
+
+      {debateMode === 'ai-vs-player' && waitingForPlayer && (
+        <Card className="mb-4">
+          <Card.Header as="h5">あなたのターン</Card.Header>
+          <Card.Body>
+            <Form onSubmit={(e) => {
+              e.preventDefault();
+              if (playerMessage.trim()) {
+                handlePlayerMessage();
+              }
+            }}>
+              <Form.Group className="mb-3">
+                <Form.Label htmlFor="player-message">あなたの意見（150文字程度）</Form.Label>
+                <Form.Control 
+                  id="player-message"
+                  as="textarea" 
+                  rows={3} 
+                  value={playerMessage} 
+                  onChange={e => setPlayerMessage(e.target.value)}
+                  placeholder="あなたの意見を入力してください..."
+                  disabled={isLoading || isJudging}
+                />
+              </Form.Group>
+              <div className="d-flex gap-2">
+                <Button 
+                  type="submit" 
+                  variant="primary" 
+                  disabled={!playerMessage.trim() || isLoading || isJudging}
+                  className="flex-grow-1"
+                >
+                  送信
+                </Button>
+                <Button 
+                  variant="secondary" 
+                  onClick={handleEndPlayerDebate}
+                  disabled={isLoading || isJudging}
+                >
+                  討論終了
+                </Button>
+              </div>
+            </Form>
+          </Card.Body>
+        </Card>
+      )}
 
       {(isJudging || judgment) && (
         <Card bg="light">
