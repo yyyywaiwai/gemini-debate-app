@@ -75,6 +75,7 @@ export default function Home() {
   const [topic, setTopic] = useState('');
   const [ai1, setAi1] = useState<AIConfig>({ model: '', personality: PERSONALITY_PRESETS[0].prompt, customPrompt: '', finalPrompt: PERSONALITY_PRESETS[0].prompt });
   const [ai2, setAi2] = useState<AIConfig>({ model: '', personality: PERSONALITY_PRESETS[1].prompt, customPrompt: '', finalPrompt: PERSONALITY_PRESETS[1].prompt });
+  const [judgeModel, setJudgeModel] = useState('gemini-1.5-pro-latest');
 
   const [chatHistory, setChatHistory] = useState<Message[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -91,7 +92,6 @@ export default function Home() {
     setIsClient(true);
   }, []);
 
-  // コンポーネントマウント時にモデルをフェッチ
   useEffect(() => {
     const fetchModels = async () => {
       try {
@@ -99,6 +99,10 @@ export default function Home() {
         if (!response.ok) throw new Error('モデルの取得に失敗しました');
         const data = await response.json();
         setModels(data.models);
+        // Set a default judge model if the current one is not in the list or not set
+        if (data.models.length > 0 && !data.models.find((m: Model) => m.id === judgeModel)) {
+            setJudgeModel(data.models[0].id);
+        }
       } catch (err) {
         setError(err instanceof Error ? err.message : '不明なエラーが発生しました');
       }
@@ -106,14 +110,12 @@ export default function Home() {
     fetchModels();
   }, []);
 
-  // チャットログを自動スクロール
   useEffect(() => {
     if (chatLogRef.current) {
       chatLogRef.current.scrollTop = chatLogRef.current.scrollHeight;
     }
   }, [chatHistory, thinkingAI, judgment, isJudging]);
 
-  // 「考え中」のドットアニメーション
   useEffect(() => {
     if (thinkingAI) {
       const interval = setInterval(() => {
@@ -142,8 +144,8 @@ export default function Home() {
   };
 
   const handleStartDebate = async () => {
-    if (!topic || !ai1.model || !ai2.model || !ai1.finalPrompt || !ai2.finalPrompt) {
-      setError('議題と、両AIのモデルおよび性格設定をすべて入力してください。');
+    if (!topic || !ai1.model || !ai2.model || !judgeModel || !ai1.finalPrompt || !ai2.finalPrompt) {
+      setError('議題、両AIのモデル、審判AIのモデル、および両AIの性格設定をすべて入力してください。');
       return;
     }
 
@@ -220,13 +222,13 @@ export default function Home() {
         try {
           setIsJudging(true);
           const debateContent = currentHistory.filter(m => m.sender !== 'System').map(m => `${m.sender}: ${m.parts[0].text}`).join('\n\n');
-          const judgePrompt = `あなたは公平な審判です。以下のAI同士の討論について、最終的な判定を下してください。\n\n1. まず、AI 1とAI 2のそれぞれの主張の要点を簡潔にまとめてください。\n2. 次に、議論の論理性、説得力、一貫性を評価してください。\n3. 最後に、これらの評価に基づいて、どちらのAIが勝利したかを宣言し、その理由を明確に説明してください。\n\n---\n[討論の履歴]\n${debateContent}\n---\n`
+          const judgePrompt = `あなたは公平な審判です。以下のAI同士の討論について、最終的な判定を下してください.\n\n1. まず、AI 1とAI 2のそれぞれの主張の要点を簡潔にまとめてください。\n2. 次に、議論の論理性、説得力、一貫性を評価してください。\n3. 最後に、これらの評価に基づいて、どちらのAIが勝利したかを宣言し、その理由を明確に説明してください。\n\n---\n[討論の履歴]\n${debateContent}\n---\n`
 
           const response = await fetchWithRetry('/api/debate', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-              model: 'gemini-1.5-pro-latest', // Use a powerful model for judgment
+              model: judgeModel,
               systemPrompt: 'あなたは公平で、客観的な審判です。',
               history: [{ role: 'user', parts: [{ text: judgePrompt }] }],
             }),
@@ -258,6 +260,12 @@ export default function Home() {
           <Form.Group className="mb-3">
             <Form.Label htmlFor="debate-topic">討論の議題</Form.Label>
             <Form.Control id="debate-topic" type="text" placeholder="例：人工知能は人類にとって有益か？" value={topic} onChange={e => setTopic(e.target.value)} disabled={isLoading || isJudging} />
+          </Form.Group>
+          <Form.Group>
+            <Form.Label htmlFor="judge-model">審判AIモデル</Form.Label>
+            <Form.Select id="judge-model" value={judgeModel} onChange={e => setJudgeModel(e.target.value)} disabled={!isClient || isLoading || isJudging || models.length === 0}>
+                {models.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
+            </Form.Select>
           </Form.Group>
         </Card.Body>
       </Card>
