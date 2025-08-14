@@ -1,4 +1,3 @@
-
 'use client';
 
 import { useState, useEffect, useRef } from 'react';
@@ -154,7 +153,11 @@ export default function Home() {
         
         setThinkingAI(senderName);
 
-        const historyForApi = currentHistory.slice(-HISTORY_WINDOW_SIZE);
+        let historyForApi = currentHistory.slice(-HISTORY_WINDOW_SIZE);
+        // Ensure the history always starts with a 'user' role for the API
+        if (historyForApi.length > 0 && historyForApi[0].role === 'model') {
+            historyForApi = historyForApi.slice(1);
+        }
 
         const response = await fetch('/api/debate', {
           method: 'POST',
