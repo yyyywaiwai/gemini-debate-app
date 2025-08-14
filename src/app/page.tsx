@@ -1,4 +1,3 @@
-
 'use client';
 
 import { useState, useEffect, useRef } from 'react';
@@ -44,6 +43,31 @@ const PERSONALITY_PRESETS: Personality[] = [
 
 const MAX_TURNS = 25; // AIごとの最大ターン数 (50件の会話履歴に対応)
 const HISTORY_WINDOW_SIZE = 50; // APIに送信する会話履歴の最大数
+const CLIENT_MAX_RETRIES = 5;
+const CLIENT_RETRY_DELAY = 1000; // ms
+
+// Client-side fetch wrapper with retry logic for network errors
+async function fetchWithRetry(url: string, options?: RequestInit): Promise<Response> {
+    let lastError: Error | null = null;
+    for (let i = 0; i < CLIENT_MAX_RETRIES; i++) {
+        try {
+            const response = await fetch(url, options);
+            // If response is not ok, it will be handled by the calling function
+            return response;
+        } catch (error) {
+            lastError = error as Error;
+            // Retry only on network errors (which manifest as TypeError in browsers)
+            if (error instanceof TypeError && error.message.includes('fetch')) {
+                console.warn(`Fetch attempt ${i + 1} failed with network error. Retrying...`);
+                await new Promise(resolve => setTimeout(resolve, CLIENT_RETRY_DELAY));
+            } else {
+                // For other errors, re-throw immediately
+                throw error;
+            }
+        }
+    }
+    throw new Error(`Failed to fetch after ${CLIENT_MAX_RETRIES} attempts. Last error: ${lastError?.message}`);
+}
 
 export default function Home() {
   const [isClient, setIsClient] = useState(false);
@@ -69,7 +93,7 @@ export default function Home() {
   useEffect(() => {
     const fetchModels = async () => {
       try {
-        const response = await fetch('/api/models');
+        const response = await fetchWithRetry('/api/models');
         if (!response.ok) throw new Error('モデルの取得に失敗しました');
         const data = await response.json();
         setModels(data.models);
@@ -162,7 +186,7 @@ export default function Home() {
         }
 
         const startTime = Date.now();
-        const response = await fetch('/api/debate', {
+        const response = await fetchWithRetry('/api/debate', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
