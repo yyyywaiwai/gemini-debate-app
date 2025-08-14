@@ -12,6 +12,9 @@ const safetySettings = [
   { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_NONE },
 ];
 
+const MAX_RETRIES = 40;
+const RETRY_DELAY = 500; // ms
+
 export async function POST(request: Request) {
   try {
     const { model, systemPrompt, history } = await request.json();
@@ -30,11 +33,28 @@ export async function POST(request: Request) {
     const chat = generativeModel.startChat({ history });
     const lastMessage = history[history.length - 1]?.parts[0]?.text || '';
 
-    const result = await chat.sendMessage(lastMessage);
-    const response = result.response;
-    const text = response.text();
-
-    return NextResponse.json({ text });
+    let lastError: Error | null = null;
+    for (let i = 0; i < MAX_RETRIES; i++) {
+      try {
+        const result = await chat.sendMessage(lastMessage);
+        const response = result.response;
+        const text = response.text();
+        return NextResponse.json({ text, retries: i }); // Success, return immediately
+      } catch (error) {
+        lastError = error as Error;
+        // Check if the error is the specific 403 forbidden error
+        if (error instanceof Error && error.message.includes('403')) {
+          console.log(`Attempt ${i + 1} failed with 403 error. Retrying after ${RETRY_DELAY}ms...`);
+          await new Promise(resolve => setTimeout(resolve, RETRY_DELAY));
+        } else {
+          // For other errors, don't retry
+          throw error;
+        }
+      }
+    }
+    
+    // If loop finishes, all retries have failed
+    throw new Error(`Failed after ${MAX_RETRIES} retries. Last error: ${lastError?.message}`);
 
   } catch (error) {
     console.error('Error in debate API:', error);

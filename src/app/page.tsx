@@ -1,3 +1,4 @@
+
 'use client';
 
 import { useState, useEffect, useRef } from 'react';
@@ -18,6 +19,8 @@ interface Message {
   role: 'user' | 'model'; // Corresponds to Gemini API roles
   parts: { text: string }[];
   sender: 'AI 1' | 'AI 2' | 'System';
+  responseTime?: number; // in milliseconds
+  retries?: number;
 }
 
 interface AIConfig {
@@ -154,11 +157,11 @@ export default function Home() {
         setThinkingAI(senderName);
 
         let historyForApi = currentHistory.slice(-HISTORY_WINDOW_SIZE);
-        // Ensure the history always starts with a 'user' role for the API
         if (historyForApi.length > 0 && historyForApi[0].role === 'model') {
             historyForApi = historyForApi.slice(1);
         }
 
+        const startTime = Date.now();
         const response = await fetch('/api/debate', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -168,6 +171,7 @@ export default function Home() {
             history: historyForApi.map(({role, parts}) => ({role, parts})),
           }),
         });
+        const duration = Date.now() - startTime;
 
         if (!response.ok) {
           const errData = await response.json();
@@ -176,7 +180,13 @@ export default function Home() {
 
         const data = await response.json();
         setThinkingAI(null);
-        const newMessage: Message = { role: 'model', parts: [{ text: data.text }], sender: senderName };
+        const newMessage: Message = { 
+            role: 'model', 
+            parts: [{ text: data.text }], 
+            sender: senderName, 
+            responseTime: duration, 
+            retries: data.retries 
+        };
         
         currentHistory.push(newMessage);
         currentHistory.push({ role: 'user', parts: [{ text: `これに対して、あなたの反論を日本語で150文字程度にまとめて述べてください。${emotionalConstraint}` }], sender: 'System' });
@@ -257,7 +267,17 @@ export default function Home() {
                 <Badge bg="secondary">{msg.parts[0].text}</Badge>
               ) : (
                 <Card style={{ width: '80%' }}>
-                  <Card.Header as="strong" className={msg.sender === 'AI 1' ? 'bg-primary text-white' : 'bg-success text-white'}>{msg.sender}</Card.Header>
+                  <Card.Header as="strong" className={`${msg.sender === 'AI 1' ? 'bg-primary text-white' : 'bg-success text-white'} d-flex justify-content-between align-items-center`}>
+                    <span>{msg.sender}</span>
+                    <div className="d-flex align-items-center">
+                      {msg.responseTime != null && (
+                          <small className="fw-normal opacity-75 me-2">res: {(msg.responseTime / 1000).toFixed(2)}s</small>
+                      )}
+                      {msg.retries != null && msg.retries > 0 && (
+                          <small className="fw-normal opacity-75">(retry: {msg.retries})</small>
+                      )}
+                    </div>
+                  </Card.Header>
                   <Card.Body style={{ whiteSpace: 'pre-wrap' }}>{msg.parts[0].text}</Card.Body>
                 </Card>
               )}
