@@ -81,6 +81,8 @@ export default function Home() {
   const [error, setError] = useState<string | null>(null);
   const [thinkingAI, setThinkingAI] = useState<'AI 1' | 'AI 2' | null>(null);
   const [thinkingDots, setThinkingDots] = useState('.');
+  const [isJudging, setIsJudging] = useState(false);
+  const [judgment, setJudgment] = useState<string | null>(null);
   
   const chatLogRef = useRef<HTMLDivElement>(null);
   const stopDebateRef = useRef(false);
@@ -109,7 +111,7 @@ export default function Home() {
     if (chatLogRef.current) {
       chatLogRef.current.scrollTop = chatLogRef.current.scrollHeight;
     }
-  }, [chatHistory, thinkingAI]);
+  }, [chatHistory, thinkingAI, judgment, isJudging]);
 
   // 「考え中」のドットアニメーション
   useEffect(() => {
@@ -127,26 +129,16 @@ export default function Home() {
   const handlePersonalityChange = (ai: 'ai1' | 'ai2', value: string) => {
     const setter = ai === 'ai1' ? setAi1 : setAi2;
     const isCustom = value === '';
-    setter(prev => ({
-      ...prev,
-      personality: value,
-      finalPrompt: isCustom ? prev.customPrompt : value,
-    }));
+    setter(prev => ({ ...prev, personality: value, finalPrompt: isCustom ? prev.customPrompt : value }));
   };
 
   const handleCustomPromptChange = (ai: 'ai1' | 'ai2', value: string) => {
     const setter = ai === 'ai1' ? setAi1 : setAi2;
-    setter(prev => ({
-      ...prev,
-      customPrompt: value,
-      finalPrompt: prev.personality === '' ? value : prev.finalPrompt,
-    }));
+    setter(prev => ({ ...prev, customPrompt: value, finalPrompt: prev.personality === '' ? value : prev.finalPrompt }));
   };
 
   const handleStopDebate = () => {
     stopDebateRef.current = true;
-    setIsLoading(false);
-    setThinkingAI(null);
   };
 
   const handleStartDebate = async () => {
@@ -158,6 +150,7 @@ export default function Home() {
     setIsLoading(true);
     setError(null);
     setChatHistory([]);
+    setJudgment(null);
     stopDebateRef.current = false;
     
     const initialPrompt = `これから討論を始めます。議題は「${topic}」です。あなたの最初の意見を、日本語で150文字程度にまとめて述べてください。${emotionalConstraint}`;
@@ -222,6 +215,37 @@ export default function Home() {
     } finally {
       setIsLoading(false);
       setThinkingAI(null);
+
+      if (currentHistory.length > 1) {
+        try {
+          setIsJudging(true);
+          const debateContent = currentHistory.filter(m => m.sender !== 'System').map(m => `${m.sender}: ${m.parts[0].text}`).join('\n\n');
+          const judgePrompt = `あなたは公平な審判です。以下のAI同士の討論について、最終的な判定を下してください。\n\n1. まず、AI 1とAI 2のそれぞれの主張の要点を簡潔にまとめてください。\n2. 次に、議論の論理性、説得力、一貫性を評価してください。\n3. 最後に、これらの評価に基づいて、どちらのAIが勝利したかを宣言し、その理由を明確に説明してください。\n\n---\n[討論の履歴]\n${debateContent}\n---\n`
+
+          const response = await fetchWithRetry('/api/debate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              model: 'gemini-1.5-pro-latest', // Use a powerful model for judgment
+              systemPrompt: 'あなたは公平で、客観的な審判です。',
+              history: [{ role: 'user', parts: [{ text: judgePrompt }] }],
+            }),
+          });
+
+          if (!response.ok) {
+            const errData = await response.json();
+            throw new Error(errData.details || '判定の取得に失敗しました。');
+          }
+
+          const data = await response.json();
+          setJudgment(data.text);
+
+        } catch (err) {
+          setError(err instanceof Error ? err.message : '判定の生成中にエラーが発生しました。');
+        } finally {
+          setIsJudging(false);
+        }
+      }
     }
   };
 
@@ -233,7 +257,7 @@ export default function Home() {
           {error && <Alert variant="danger" onClose={() => setError(null)} dismissible>{error}</Alert>}
           <Form.Group className="mb-3">
             <Form.Label htmlFor="debate-topic">討論の議題</Form.Label>
-            <Form.Control id="debate-topic" type="text" placeholder="例：人工知能は人類にとって有益か？" value={topic} onChange={e => setTopic(e.target.value)} disabled={isLoading} />
+            <Form.Control id="debate-topic" type="text" placeholder="例：人工知能は人類にとって有益か？" value={topic} onChange={e => setTopic(e.target.value)} disabled={isLoading || isJudging} />
           </Form.Group>
         </Card.Body>
       </Card>
@@ -246,20 +270,20 @@ export default function Home() {
               <Card.Body>
                 <Form.Group className="mb-3">
                   <Form.Label htmlFor={`${id}-model`}>モデル</Form.Label>
-                  <Form.Select id={`${id}-model`} value={config.model} onChange={e => (id === 'ai1' ? setAi1 : setAi2)(prev => ({...prev, model: e.target.value}))} disabled={!isClient || models.length === 0}>
+                  <Form.Select id={`${id}-model`} value={config.model} onChange={e => (id === 'ai1' ? setAi1 : setAi2)(prev => ({...prev, model: e.target.value}))} disabled={!isClient || isLoading || isJudging || models.length === 0}>
                     <option value="">モデルを選択してください...</option>
                     {isClient && models.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
                   </Form.Select>
                 </Form.Group>
                 <Form.Group className="mb-3">
                   <Form.Label htmlFor={`${id}-personality`}>性格</Form.Label>
-                  <Form.Select id={`${id}-personality`} value={config.personality} onChange={e => handlePersonalityChange(id as 'ai1' | 'ai2', e.target.value)} disabled={isLoading}>
+                  <Form.Select id={`${id}-personality`} value={config.personality} onChange={e => handlePersonalityChange(id as 'ai1' | 'ai2', e.target.value)} disabled={isLoading || isJudging}>
                     {PERSONALITY_PRESETS.map(p => <option key={p.name} value={p.prompt}>{p.name}</option>)}
                   </Form.Select>
                 </Form.Group>
                 <Form.Group>
                   <Form.Label htmlFor={`${id}-custom-prompt`}>カスタムプロンプト</Form.Label>
-                  <Form.Control id={`${id}-custom-prompt`} as="textarea" rows={3} placeholder={`AI ${id.slice(-1)} のカスタム指示を入力...`} value={config.customPrompt} onChange={e => handleCustomPromptChange(id as 'ai1' | 'ai2', e.target.value)} disabled={isLoading || config.personality !== ''} />
+                  <Form.Control id={`${id}-custom-prompt`} as="textarea" rows={3} placeholder={`AI ${id.slice(-1)} のカスタム指示を入力...`} value={config.customPrompt} onChange={e => handleCustomPromptChange(id as 'ai1' | 'ai2', e.target.value)} disabled={isLoading || isJudging || config.personality !== ''} />
                 </Form.Group>
               </Card.Body>
             </Card>
@@ -269,7 +293,7 @@ export default function Home() {
 
       <div className="d-grid mb-4">
         <Stack direction="horizontal" gap={3}>
-            <Button variant="primary" size="lg" onClick={handleStartDebate} disabled={isLoading} className="w-100">
+            <Button variant="primary" size="lg" onClick={handleStartDebate} disabled={isLoading || isJudging} className="w-100">
               {isLoading ? <><Spinner as="span" animation="border" size="sm" role="status" aria-hidden="true" /> 討論中...</> : '討論を開始'}
             </Button>
             {isLoading && (
@@ -280,7 +304,7 @@ export default function Home() {
         </Stack>
       </div>
 
-      <Card>
+      <Card className="mb-4">
         <Card.Header as="h5">討論ログ</Card.Header>
         <Card.Body ref={chatLogRef} style={{ height: '500px', overflowY: 'auto', background: '#f8f9fa' }}>
           {chatHistory.length === 0 && !isLoading && <p className="text-muted">討論を開始すると、ここに内容が表示されます。</p>}
@@ -319,6 +343,23 @@ export default function Home() {
           )}
         </Card.Body>
       </Card>
+
+      {(isJudging || judgment) && (
+        <Card bg="light">
+            <Card.Header as="h5">最終判定</Card.Header>
+            <Card.Body>
+                {isJudging ? (
+                    <div className="text-center">
+                        <Spinner animation="border" variant="secondary" className="me-2"/>
+                        <span>審判AIが判定中です...</span>
+                    </div>
+                ) : (
+                    <div style={{ whiteSpace: 'pre-wrap' }}>{judgment}</div>
+                )}
+            </Card.Body>
+        </Card>
+      )}
+
     </Container>
   );
 }
