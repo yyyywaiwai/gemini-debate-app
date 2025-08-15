@@ -45,20 +45,42 @@ const MAX_TURNS = 25; // AIごとの最大ターン数 (50件の会話履歴に�
 const HISTORY_WINDOW_SIZE = 50; // APIに送信する会話履歴の最大数
 const CLIENT_MAX_RETRIES = 5;
 const CLIENT_RETRY_DELAY = 1000; // ms
+const LONG_REQUEST_TIMEOUT = 60000; // 60 seconds for judge requests
 
 // Client-side fetch wrapper with retry logic for network errors
-async function fetchWithRetry(url: string, options?: RequestInit): Promise<Response> {
+async function fetchWithRetry(url: string, options?: RequestInit, timeout?: number): Promise<Response> {
     let lastError: Error | null = null;
+    const requestTimeout = timeout || 30000; // Default 30 seconds
+    
     for (let i = 0; i < CLIENT_MAX_RETRIES; i++) {
         try {
-            const response = await fetch(url, options);
+            // Create AbortController for timeout
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), requestTimeout);
+            
+            const optionsWithTimeout = {
+                ...options,
+                signal: controller.signal
+            };
+            
+            const response = await fetch(url, optionsWithTimeout);
+            clearTimeout(timeoutId);
+            
             // If response is not ok, it will be handled by the calling function
             return response;
         } catch (error) {
             lastError = error as Error;
+            
+            // Check if it's an abort error (timeout)
+            if (error instanceof Error && error.name === 'AbortError') {
+                console.warn(`Fetch attempt ${i + 1} timed out after ${requestTimeout}ms. Retrying...`);
+                await new Promise(resolve => setTimeout(resolve, CLIENT_RETRY_DELAY));
+                continue;
+            }
+            
             // Retry only on network errors (which manifest as TypeError in browsers)
-            if (error instanceof TypeError && error.message.includes('fetch')) {
-                console.warn(`Fetch attempt ${i + 1} failed with network error. Retrying...`);
+            if (error instanceof TypeError && (error.message.includes('fetch') || error.message.includes('Failed to fetch'))) {
+                console.warn(`Fetch attempt ${i + 1} failed with network error: ${error.message}. Retrying...`);
                 await new Promise(resolve => setTimeout(resolve, CLIENT_RETRY_DELAY));
             } else {
                 // For other errors, re-throw immediately
@@ -95,6 +117,7 @@ export default function Home() {
   const abortControllerRef = useRef<AbortController | null>(null);
   const isModelsInitializedRef = useRef(false);
   const aiResponseInProgressRef = useRef(false);
+  const judgmentInProgressRef = useRef(false);
 
   useEffect(() => {
     setIsClient(true);
@@ -276,7 +299,7 @@ export default function Home() {
           systemPrompt: strengthenedAI1Prompt,
           history: finalHistory,
         }),
-      });
+      }, LONG_REQUEST_TIMEOUT); // Extended timeout for AI responses
       const duration = Date.now() - startTime;
 
       if (!response.ok) {
@@ -329,7 +352,16 @@ export default function Home() {
   };
 
   const performJudgment = async (chatHistory: Message[]) => {
+    // Prevent duplicate judgment requests
+    if (judgmentInProgressRef.current) {
+      console.log('[performJudgment] Already in progress, skipping duplicate call');
+      return;
+    }
+    
     try {
+      judgmentInProgressRef.current = true;
+      console.log('[performJudgment] Starting judgment request');
+      
       const debateContent = chatHistory
         .filter(m => m.sender !== 'System')
         .map(m => {
@@ -342,6 +374,7 @@ export default function Home() {
         ? `あなたは公平な審判です。以下のAIとプレイヤーの討論について、最終的な判定を下してください。\n\n1. まず、AIとプレイヤーのそれぞれの主張の要点を簡潔にまとめてください。\n2. 次に、議論の論理性、説得力、一貫性を評価してください。\n3. 最後に、これらの評価に基づいて、どちらが勝利したかを宣言し、その理由を明確に説明してください。\n\n---\n[討論の履歴]\n${debateContent}\n---\n`
         : `あなたは公平な審判です。以下のAI同士の討論について、最終的な判定を下してください。\n\n1. まず、AI 1とAI 2のそれぞれの主張の要点を簡潔にまとめてください。\n2. 次に、議論の論理性、説得力、一貫性を評価してください。\n3. 最後に、これらの評価に基づいて、どちらのAIが勝利したかを宣言し、その理由を明確に説明してください。\n\n---\n[討論の履歴]\n${debateContent}\n---\n`;
 
+      console.log('[performJudgment] Making judgment request with extended timeout');
       const response = await fetchWithRetry('/api/debate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -350,7 +383,7 @@ export default function Home() {
           systemPrompt: 'あなたは公平で、客観的な審判です。',
           history: [{ role: 'user', parts: [{ text: judgePrompt }] }],
         }),
-      });
+      }, LONG_REQUEST_TIMEOUT); // Use extended timeout for judgment
 
       if (!response.ok) {
         const errData = await response.json();
@@ -358,12 +391,16 @@ export default function Home() {
       }
 
       const data = await response.json();
+      console.log('[performJudgment] Judgment request successful');
       setJudgment(data.text);
 
     } catch (err) {
+      console.error('[performJudgment] Judgment request failed:', err);
       setError(err instanceof Error ? err.message : '判定の生成中にエラーが発生しました。');
     } finally {
       setIsJudging(false);
+      judgmentInProgressRef.current = false;
+      console.log('[performJudgment] Judgment request completed');
     }
   };
 
@@ -381,6 +418,7 @@ export default function Home() {
     setWaitingForPlayer(false);
     stopDebateRef.current = false;
     aiResponseInProgressRef.current = false; // AI応答フラグもリセット
+    judgmentInProgressRef.current = false; // 審判フラグもリセット
     
     const initialPrompt = `これから討論を始めます。議題は「${topic}」です。あなたの最初の意見を、日本語で150文字程度にまとめて述べてください。${emotionalConstraint}`;
     setChatHistory([{ sender: 'System', role: 'user', parts: [{ text: `討論議題: ${topic}` }] }]);
@@ -431,7 +469,7 @@ export default function Home() {
           systemPrompt: strengthenedPrompt,
           history: historyForApi,
         }),
-      });
+      }, LONG_REQUEST_TIMEOUT); // Extended timeout for AI responses
       const duration = Date.now() - startTime;
 
       if (!response.ok) {
@@ -510,7 +548,7 @@ export default function Home() {
             systemPrompt: strengthenedPrompt,
             history: historyForApi,
           }),
-        });
+        }, LONG_REQUEST_TIMEOUT); // Extended timeout for AI responses
         const duration = Date.now() - startTime;
 
         if (!response.ok) {
