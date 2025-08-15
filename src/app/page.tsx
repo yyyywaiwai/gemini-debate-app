@@ -72,6 +72,7 @@ async function fetchWithRetry(url: string, options?: RequestInit): Promise<Respo
 export default function Home() {
   const [isClient, setIsClient] = useState(false);
   const [models, setModels] = useState<Model[]>([]);
+  const [isLoadingModels, setIsLoadingModels] = useState(false);
   const [topic, setTopic] = useState('');
   const [debateMode, setDebateMode] = useState<'ai-vs-ai' | 'ai-vs-player'>('ai-vs-ai');
   const [ai1, setAi1] = useState<AIConfig>({ model: '', personality: PERSONALITY_PRESETS[0].prompt, customPrompt: '', finalPrompt: PERSONALITY_PRESETS[0].prompt });
@@ -90,28 +91,89 @@ export default function Home() {
   
   const chatLogRef = useRef<HTMLDivElement>(null);
   const stopDebateRef = useRef(false);
+  const fetchingModelsRef = useRef(false);
+  const abortControllerRef = useRef<AbortController | null>(null);
+  const isModelsInitializedRef = useRef(false);
+  const aiResponseInProgressRef = useRef(false);
 
   useEffect(() => {
     setIsClient(true);
   }, []);
 
+  // Fetch models only once on component mount
   useEffect(() => {
     const fetchModels = async () => {
+      const clientId = Math.random().toString(36).substr(2, 9);
+      console.log(`[CLIENT-${clientId}] Starting models fetch request`);
+      
+      // Prevent duplicate requests
+      if (fetchingModelsRef.current || isModelsInitializedRef.current) {
+        console.log(`[CLIENT-${clientId}] Skipping - already fetching or initialized`);
+        return;
+      }
+      
+      // Cancel any existing request
+      if (abortControllerRef.current) {
+        console.log(`[CLIENT-${clientId}] Aborting existing request`);
+        abortControllerRef.current.abort();
+      }
+      
+      // Create new AbortController
+      abortControllerRef.current = new AbortController();
+      console.log(`[CLIENT-${clientId}] Created new AbortController`);
+      
       try {
-        const response = await fetchWithRetry('/api/models');
-        if (!response.ok) throw new Error('モデルの取得に失敗しました');
+        fetchingModelsRef.current = true;
+        setIsLoadingModels(true);
+        console.log(`[CLIENT-${clientId}] Starting fetch to /api/models`);
+        const response = await fetch('/api/models', {
+          signal: abortControllerRef.current.signal
+        });
+        
+        console.log(`[CLIENT-${clientId}] Received response: ${response.status} ${response.statusText}`);
+        if (!response.ok) {
+          const errorBody = await response.text();
+          console.error(`[CLIENT-${clientId}] Server returned error ${response.status}: ${errorBody}`);
+          throw new Error(`モデルの取得に失敗しました (${response.status})`);
+        }
         const data = await response.json();
+        console.log(`[CLIENT-${clientId}] Parsed JSON data:`, data);
         setModels(data.models);
-        // Set a default judge model if the current one is not in the list or not set
+        isModelsInitializedRef.current = true;
+        console.log(`[CLIENT-${clientId}] Models state updated with ${data.models?.length || 0} models`);
+        
+        // Set default judge model only if it's not found in the available models
         if (data.models.length > 0 && !data.models.find((m: Model) => m.id === judgeModel)) {
-            setJudgeModel(data.models[0].id);
+          console.log(`Setting default judge model from ${judgeModel} to ${data.models[0].id}`);
+          setJudgeModel(data.models[0].id);
         }
       } catch (err) {
+        if (err instanceof Error && err.name === 'AbortError') {
+          console.log(`[CLIENT-${clientId}] Request was aborted`);
+          return;
+        }
+        console.error(`[CLIENT-${clientId}] Error during fetch:`, err);
         setError(err instanceof Error ? err.message : '不明なエラーが発生しました');
+      } finally {
+        console.log(`[CLIENT-${clientId}] Cleaning up request state`);
+        fetchingModelsRef.current = false;
+        setIsLoadingModels(false);
       }
     };
+    
+    console.log('[USEEFFECT] Models fetch useEffect executing');
     fetchModels();
-  }, []);
+    
+    // Cleanup function
+    return () => {
+      console.log('[USEEFFECT] Models fetch useEffect cleanup executing');
+      fetchingModelsRef.current = false;
+      if (abortControllerRef.current) {
+        console.log('[USEEFFECT] Aborting request during cleanup');
+        abortControllerRef.current.abort();
+      }
+    };
+  }, []); // Empty dependency array - only run once on mount
 
   useEffect(() => {
     if (chatLogRef.current) {
@@ -144,9 +206,11 @@ export default function Home() {
 
   const handleStopDebate = () => {
     stopDebateRef.current = true;
+    aiResponseInProgressRef.current = false; // AI応答も停止
   };
 
   const handlePlayerMessage = async () => {
+    console.log('[handlePlayerMessage] Called');
     const newMessage: Message = {
       role: 'user',
       parts: [{ text: playerMessage }],
@@ -156,36 +220,56 @@ export default function Home() {
     setWaitingForPlayer(false);
     setIsLoading(true);
     
-    setChatHistory(prev => {
-      const updatedHistory = [...prev, newMessage];
-      // AIの応答を非同期で取得
-      getAIResponse(updatedHistory);
-      return updatedHistory;
-    });
+    // 状態更新とAPI呼び出しを分離
+    const updatedHistory = [...chatHistory, newMessage];
+    setChatHistory(updatedHistory);
+    
+    // AIの応答を非同期で取得
+    console.log('[handlePlayerMessage] Calling getAIResponse');
+    await getAIResponse(updatedHistory);
   };
 
   const getAIResponse = async (currentChatHistory: Message[]) => {
+    // 重複実行を防止
+    if (aiResponseInProgressRef.current) {
+      console.log('[getAIResponse] Already in progress, skipping duplicate call');
+      return;
+    }
+    
     try {
+      aiResponseInProgressRef.current = true;
       setThinkingAI('AI 1');
       
       // システムメッセージを除いた会話履歴を準備
-      const historyForApi = currentChatHistory
+      let historyMessages = currentChatHistory
         .filter(msg => msg.sender !== 'System')
-        .slice(-HISTORY_WINDOW_SIZE)
-        .map(({role, parts}) => ({role, parts}));
+        .slice(-HISTORY_WINDOW_SIZE);
       
-      // AIに反論を求める
-      const counterPrompt = `これに対して、あなたの反論を日本語で150文字程度にまとめて述べてください。${emotionalConstraint}`;
-      historyForApi.push({ role: 'user', parts: [{ text: counterPrompt }] });
+      // Ensure the first message is always 'user'
+      while (historyMessages.length > 0 && historyMessages[0].role === 'model') {
+        historyMessages = historyMessages.slice(1);
+      }
+      
+      // Convert to API format
+      const historyForApi = historyMessages.map(({role, parts}) => ({role, parts}));
+      
+      // AI1に個別の反論プロンプトを送る
+      const counterPrompt = `あなたはAI 1として、あなた独自の性格と価値観を保ちながら、プレイヤーの発言に対して反論してください。相手の論理に流されず、あなた自身の視点で150文字程度にまとめてください。${emotionalConstraint}`;
+      const finalHistory = [...historyForApi, { role: 'user', parts: [{ text: counterPrompt }] }];
 
+      // Strengthen AI1's system prompt
+      const strengthenedAI1Prompt = `${ai1.finalPrompt}\n\n重要: あなたはAI 1です。プレイヤーの論理や発言スタイルに影響されず、常にあなた独自の性格と価値観を保ってください。あなた自身の視点で考え、発言してください。`;
+      
+      console.log(`[getAIResponse] AI 1 responding with prompt: ${strengthenedAI1Prompt.substring(0, 150)}...`);
+      
       const startTime = Date.now();
       const response = await fetchWithRetry('/api/debate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           model: ai1.model,
-          systemPrompt: ai1.finalPrompt,
-          history: historyForApi,
+          systemPrompt: strengthenedAI1Prompt,
+          history: finalHistory,
         }),
       });
       const duration = Date.now() - startTime;
@@ -216,6 +300,8 @@ export default function Home() {
       setError(err instanceof Error ? err.message : 'AIの応答取得中にエラーが発生しました。');
       setIsLoading(false);
       setThinkingAI(null);
+    } finally {
+      aiResponseInProgressRef.current = false;
     }
   };
 
@@ -289,6 +375,7 @@ export default function Home() {
     setJudgment(null);
     setWaitingForPlayer(false);
     stopDebateRef.current = false;
+    aiResponseInProgressRef.current = false; // AI応答フラグもリセット
     
     const initialPrompt = `これから討論を始めます。議題は「${topic}」です。あなたの最初の意見を、日本語で150文字程度にまとめて述べてください。${emotionalConstraint}`;
     setChatHistory([{ sender: 'System', role: 'user', parts: [{ text: `討論議題: ${topic}` }] }]);
@@ -309,19 +396,34 @@ export default function Home() {
       // AI先手で開始
       setThinkingAI('AI 1');
       
-      let historyForApi = currentHistory.slice(-HISTORY_WINDOW_SIZE);
-      if (historyForApi.length > 0 && historyForApi[0].role === 'model') {
-        historyForApi = historyForApi.slice(1);
+      let historyMessages = currentHistory.slice(-HISTORY_WINDOW_SIZE);
+      // Ensure the first message is always 'user'
+      while (historyMessages.length > 0 && historyMessages[0].role === 'model') {
+        historyMessages = historyMessages.slice(1);
+      }
+      
+      // Convert to API format
+      let historyForApi = historyMessages.map(({role, parts}) => ({role, parts}));
+      
+      // If we have no history or it doesn't start with user, add initial prompt
+      if (historyForApi.length === 0 || historyForApi[0].role !== 'user') {
+        const initialPrompt = { role: 'user' as const, parts: [{ text: `これから討論を始めます。議題は「${topic}」です。あなたの最初の意見を、日本語で150文字程度にまとめて述べてください。${emotionalConstraint}` }] };
+        historyForApi = [initialPrompt, ...historyForApi];
       }
 
+      // Strengthen AI1's system prompt for initial response  
+      const strengthenedPrompt = `${ai1.finalPrompt}\n\n重要: あなたはAI 1です。これから始まる討論で、常にあなた独自の性格と価値観を保ってください。相手の影響を受けず、あなた自身の視点で発言してください。`;
+      
+      console.log(`[runPlayerDebate] AI 1 initial response with prompt: ${strengthenedPrompt.substring(0, 150)}...`);
+      
       const startTime = Date.now();
       const response = await fetchWithRetry('/api/debate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           model: ai1.model,
-          systemPrompt: ai1.finalPrompt,
-          history: historyForApi.map(({role, parts}) => ({role, parts})),
+          systemPrompt: strengthenedPrompt,
+          history: historyForApi,
         }),
       });
       const duration = Date.now() - startTime;
@@ -371,19 +473,35 @@ export default function Home() {
         
         setThinkingAI(senderName);
 
-        let historyForApi = currentHistory.slice(-HISTORY_WINDOW_SIZE);
-        if (historyForApi.length > 0 && historyForApi[0].role === 'model') {
-            historyForApi = historyForApi.slice(1);
+        let historyMessages = currentHistory.slice(-HISTORY_WINDOW_SIZE);
+        // Ensure the first message is always 'user'
+        while (historyMessages.length > 0 && historyMessages[0].role === 'model') {
+            historyMessages = historyMessages.slice(1);
+        }
+        
+        // Convert to API format
+        let historyForApi = historyMessages.map(({role, parts}) => ({role, parts}));
+        
+        // If we have no history or it doesn't start with user, add initial prompt
+        if (historyForApi.length === 0 || historyForApi[0].role !== 'user') {
+            const initialPrompt = { role: 'user' as const, parts: [{ text: `これから討論を始めます。議題は「${topic}」です。あなたの最初の意見を、日本語で150文字程度にまとめて述べてください。${emotionalConstraint}` }] };
+            historyForApi = [initialPrompt, ...historyForApi];
         }
 
+        // Strengthen system prompt to maintain personality
+        const strengthenedPrompt = `${currentAi.finalPrompt}\n\n重要: あなたは${senderName}です。相手の論理や発言スタイルに影響されず、常にあなた独自の性格と価値観を保ってください。あなた自身の視点で考え、発言してください。`;
+        
+        console.log(`[runAIDebate] Turn ${i+1}: ${senderName} speaking`);
+        console.log(`[runAIDebate] ${senderName} prompt: ${strengthenedPrompt.substring(0, 150)}...`);
+        
         const startTime = Date.now();
         const response = await fetchWithRetry('/api/debate', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             model: currentAi.model,
-            systemPrompt: currentAi.finalPrompt,
-            history: historyForApi.map(({role, parts}) => ({role, parts})),
+            systemPrompt: strengthenedPrompt,
+            history: historyForApi,
           }),
         });
         const duration = Date.now() - startTime;
@@ -404,7 +522,15 @@ export default function Home() {
         };
         
         currentHistory.push(newMessage);
-        currentHistory.push({ role: 'user', parts: [{ text: `これに対して、あなたの反論を日本語で150文字程度にまとめて述べてください。${emotionalConstraint}` }], sender: 'System' });
+        
+        // Add personalized counter prompt based on next AI's personality
+        const nextIsAi1Turn = (i + 1) % 2 === 0;
+        const nextAi = nextIsAi1Turn ? ai1 : ai2;
+        const nextSenderName = nextIsAi1Turn ? 'AI 1' : 'AI 2';
+        
+        const personalizedPrompt = `あなたは${nextSenderName}として、あなた独自の性格と価値観を保ちながら、直前の発言に対して反論してください。相手の論理に流されず、あなた自身の視点で150文字程度にまとめてください。${emotionalConstraint}`;
+        
+        currentHistory.push({ role: 'user', parts: [{ text: personalizedPrompt }], sender: 'System' });
 
         setChatHistory(prev => [...prev, newMessage]);
       }
@@ -440,8 +566,14 @@ export default function Home() {
           </Form.Group>
           <Form.Group>
             <Form.Label htmlFor="judge-model">審判AIモデル</Form.Label>
-            <Form.Select id="judge-model" value={judgeModel} onChange={e => setJudgeModel(e.target.value)} disabled={!isClient || isLoading || isJudging || models.length === 0}>
-                {models.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
+            <Form.Select id="judge-model" value={judgeModel} onChange={e => setJudgeModel(e.target.value)} disabled={!isClient || isLoading || isJudging || models.length === 0 || isLoadingModels}>
+                {isLoadingModels ? (
+                  <option value="">モデルを読み込み中...</option>
+                ) : models.length === 0 ? (
+                  <option value="">モデルの取得に失敗しました</option>
+                ) : (
+                  models.map(m => <option key={m.id} value={m.id}>{m.name}</option>)
+                )}
             </Form.Select>
           </Form.Group>
         </Card.Body>
@@ -458,9 +590,17 @@ export default function Home() {
               <Card.Body>
                 <Form.Group className="mb-3">
                   <Form.Label htmlFor={`${id}-model`}>モデル</Form.Label>
-                  <Form.Select id={`${id}-model`} value={config.model} onChange={e => (id === 'ai1' ? setAi1 : setAi2)(prev => ({...prev, model: e.target.value}))} disabled={!isClient || isLoading || isJudging || models.length === 0}>
-                    <option value="">モデルを選択してください...</option>
-                    {isClient && models.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
+                  <Form.Select id={`${id}-model`} value={config.model} onChange={e => (id === 'ai1' ? setAi1 : setAi2)(prev => ({...prev, model: e.target.value}))} disabled={!isClient || isLoading || isJudging || models.length === 0 || isLoadingModels}>
+                    {isLoadingModels ? (
+                      <option value="">モデルを読み込み中...</option>
+                    ) : models.length === 0 ? (
+                      <option value="">モデルの取得に失敗しました</option>
+                    ) : (
+                      <>
+                        <option value="">モデルを選択してください...</option>
+                        {isClient && models.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
+                      </>
+                    )}
                   </Form.Select>
                 </Form.Group>
                 <Form.Group className="mb-3">
