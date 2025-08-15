@@ -2,7 +2,11 @@
 import { GoogleGenerativeAI, HarmCategory, HarmBlockThreshold } from '@google/generative-ai';
 import { NextResponse } from 'next/server';
 
-const API_KEY = process.env.API_KEY || 'AIzaSyDgT2iynBTPbyavRAtgAf1F4tPP_Gc87xE';
+const API_KEY = process.env.API_KEY;
+
+if (!API_KEY) {
+  throw new Error('API_KEY environment variable is required');
+}
 const genAI = new GoogleGenerativeAI(API_KEY);
 
 const safetySettings = [

@@ -1,36 +1,188 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Gemini Debate App
 
-## Getting Started
+Google Gemini APIを使用してAI同士の討論を自動化するアプリケーションです。異なる性格を持つAI同士の討論を観戦したり、自分でAIと討論したりできます。
 
-First, run the development server:
+![Gemini Debate App](icon.png)
 
+## 機能
+
+### 🤖 AI vs AI 討論
+- 異なる性格を持つ2つのAIモデルが討論
+- 5つの事前設定された性格タイプ + カスタム性格オプション
+- 自動ターン制討論進行（各AIあたり最大25ターン）
+- リアルタイム思考インジケーター（アニメーション付き）
+
+### 👤 AI vs プレイヤー モード
+- AIと直接討論
+- AIは討論中一貫して性格を維持
+- プレイヤーは自由に応答・論証可能
+- いつでも討論を終了して判定を受けられる
+
+### ⚖️ AI審判システム
+- 第三のAIモデルが最終判定と分析を提供
+- 論理性、説得力、一貫性に基づく評価
+- 双方の要点を要約
+- 勝敗を詳細な理由とともに宣言
+
+### 🎯 高度な機能
+- **会話履歴管理**: 討論履歴のインテリジェントウィンドウ処理（最大50メッセージ）
+- **リトライメカニズム**: APIレート制限とネットワーク問題の堅牢なエラーハンドリング
+- **応答メトリクス**: 各メッセージの応答時間とリトライ回数を表示
+- **性格一貫性**: 強化プロンプトによりAI性格を討論全体で維持
+- **日本語サポート**: 150文字制約での日本語討論
+
+## 技術スタック
+
+- **フレームワーク**: Next.js 15.4.6（App Router使用）
+- **フロントエンド**: React 19.1.0 + React Bootstrap
+- **AI統合**: Google Generative AI SDK
+- **スタイリング**: Bootstrap 5.3.7
+- **言語**: TypeScript
+
+## セットアップ
+
+### 前提条件
+
+- Node.js 18以上
+- Google Gemini APIキー
+
+### インストール
+
+1. リポジトリをクローン：
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+git clone https://github.com/yourusername/gemini-debate-app.git
+cd gemini-debate-app
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+2. 依存関係をインストール：
+```bash
+npm install
+```
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+3. 環境変数を設定：
+```bash
+cp .env.example .env.local
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+`.env.local`を編集してGoogle Gemini APIキーを追加：
+```env
+API_KEY=あなたのGoogle_Gemini_APIキー
+```
 
-## Learn More
+### Gemini APIキーの取得方法
 
-To learn more about Next.js, take a look at the following resources:
+1. [Google AI Studio](https://makersuite.google.com/app/apikey)にアクセス
+2. Googleアカウントでサインイン
+3. 新しいAPIキーを作成
+4. キーを`.env.local`ファイルにコピー
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+### アプリケーションの実行
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+開発サーバーを起動：
+```bash
+npm run dev
+```
 
-## Deploy on Vercel
+ブラウザで [http://localhost:3000](http://localhost:3000) を開く。
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## 使用方法
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+### 討論の設定
+
+1. **討論モード選択**: 「AI vs AI」または「AI vs プレイヤー」を選択
+2. **議題入力**: 討論テーマを入力（例：「人工知能は人類にとって有益か？」）
+3. **モデル選択**: 各参加者と審判用のGeminiモデルを選択
+4. **性格設定**: 
+   - プリセット性格から選択（冷静沈着な分析家、情熱的な理想主義者など）
+   - またはカスタムプロンプトで独自性格を作成
+5. **討論開始**: 「討論開始」をクリック
+
+### 利用可能な性格タイプ
+
+- **冷静沈着な分析家**: 論理的推論による冷静で分析的なアプローチ
+- **情熱的な理想主義者**: 感情的訴求力のある情熱的な理想主義者
+- **現実的な批判者**: 実用的な懸念に焦点を当てる現実的批判者
+- **建設的な調停者**: 中間地点を求める建設的調停者
+- **懐疑的な質問者**: 前提に疑問を投げかける懐疑的質問者
+- **カスタム**: カスタムプロンプトで独自性格を作成
+
+### インターフェースの理解
+
+- **応答時間**: 各AIの応答にかかった時間を表示
+- **リトライ回数**: レート制限によりリトライが必要だった場合に表示
+- **リアルタイムインジケーター**: AIが「考え中」の時にアニメーション表示
+- **スクロール可能チャットログ**: 最新メッセージへの自動スクロール
+- **色分け**: 
+  - AI 1: 青ヘッダー
+  - AI 2: 緑ヘッダー
+  - プレイヤー: 黄ヘッダー
+  - システム: グレーバッジ
+
+## アーキテクチャ
+
+### APIルート
+
+- `/api/models` - リトライロジック付きでGeminiモデルを取得
+- `/api/debate` - 会話履歴付きでAI応答を生成
+
+### 主要コンポーネント
+
+- **会話履歴管理**: Gemini API互換形式を維持
+- **リトライシステム**: クライアント側（5回）とサーバー側（500回）エラーハンドリング
+- **状態管理**: パフォーマンス最適化のためReact hooks + refs使用
+- **性格強化**: AI キャラクター一貫性維持のための動的プロンプト強化
+
+### エラーハンドリング
+
+- **レート制限**: 指数バックオフによる自動リトライ
+- **ネットワーク問題**: タイムアウトハンドリング付きクライアント側リトライ
+- **APIエラー**: 解除可能アラートによる優雅なエラー表示
+- **会話検証**: Gemini API用の適切なロール順序確保
+
+## 開発
+
+### ビルドコマンド
+
+```bash
+npm run dev      # 開発サーバー起動
+npm run build    # 本番用ビルド
+npm run start    # 本番サーバー起動
+npm run lint     # ESLintチェック実行
+```
+
+### 環境変数
+
+| 変数名 | 説明 | 必須 |
+|--------|------|------|
+| `API_KEY` | Google Gemini APIキー | はい |
+
+### 貢献
+
+1. リポジトリをフォーク
+2. 機能ブランチを作成: `git checkout -b feature-name`
+3. 変更をコミット: `git commit -am 'Add feature'`
+4. ブランチにプッシュ: `git push origin feature-name`
+5. プルリクエストを送信
+
+## デプロイ
+
+### Vercel（推奨）
+
+1. コードをGitHubにプッシュ
+2. [Vercel](https://vercel.com)にリポジトリを接続
+3. Vercelダッシュボードで`API_KEY`環境変数を追加
+4. プッシュごとに自動デプロイ
+
+### その他のプラットフォーム
+
+これは標準的なNext.jsアプリケーションで、Node.jsアプリケーションをサポートするあらゆるプラットフォームにデプロイ可能です。
+
+## ライセンス
+
+MIT License - 詳細は[LICENSE](LICENSE)ファイルを参照。
+
+## 謝辞
+
+- [Next.js](https://nextjs.org/)で構築
+- [Google Gemini API](https://ai.google.dev/)を使用
+- [React Bootstrap](https://react-bootstrap.github.io/)のUIコンポーネントを使用

@@ -2,9 +2,11 @@ import { NextResponse } from 'next/server';
 
 console.log('🔄 models/route.ts MODULE LOADED');
 
-// IMPORTANT: In a real-world application, you should never hardcode API keys.
-// Use environment variables instead.
-const API_KEY = process.env.API_KEY || 'AIzaSyDgT2iynBTPbyavRAtgAf1F4tPP_Gc87xE';
+const API_KEY = process.env.API_KEY;
+
+if (!API_KEY) {
+  throw new Error('API_KEY environment variable is required');
+}
 
 const GEMINI_API_URL = `https://generativelanguage.googleapis.com/v1beta/models?key=${API_KEY}`;
 
