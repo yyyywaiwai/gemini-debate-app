@@ -156,29 +156,6 @@ npm run lint     # ESLintチェック実行
 |--------|------|------|
 | `API_KEY` | Google Gemini APIキー | はい |
 
-### 貢献
-
-1. リポジトリをフォーク
-2. 機能ブランチを作成: `git checkout -b feature-name`
-3. 変更をコミット: `git commit -am 'Add feature'`
-4. ブランチにプッシュ: `git push origin feature-name`
-5. プルリクエストを送信
-
-## デプロイ
-
-### Vercel（推奨）
-
-1. コードをGitHubにプッシュ
-2. [Vercel](https://vercel.com)にリポジトリを接続
-3. Vercelダッシュボードで`API_KEY`環境変数を追加
-4. プッシュごとに自動デプロイ
-
-### その他のプラットフォーム
-
-これは標準的なNext.jsアプリケーションで、Node.jsアプリケーションをサポートするあらゆるプラットフォームにデプロイ可能です。
-
-## ライセンス
-
 MIT License - 詳細は[LICENSE](LICENSE)ファイルを参照。
 
 ## 謝辞
