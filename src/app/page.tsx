@@ -201,7 +201,11 @@ export default function Home() {
 
   const handleCustomPromptChange = (ai: 'ai1' | 'ai2', value: string) => {
     const setter = ai === 'ai1' ? setAi1 : setAi2;
-    setter(prev => ({ ...prev, customPrompt: value, finalPrompt: prev.personality === '' ? value : prev.finalPrompt }));
+    setter(prev => ({ 
+      ...prev, 
+      customPrompt: value, 
+      finalPrompt: prev.personality === '' ? value : prev.finalPrompt 
+    }));
   };
 
   const handleStopDebate = () => {
@@ -260,7 +264,8 @@ export default function Home() {
       // Strengthen AI1's system prompt
       const strengthenedAI1Prompt = `${ai1.finalPrompt}\n\n重要: あなたはAI 1です。プレイヤーの論理や発言スタイルに影響されず、常にあなた独自の性格と価値観を保ってください。あなた自身の視点で考え、発言してください。`;
       
-      console.log(`[getAIResponse] AI 1 responding with prompt: ${strengthenedAI1Prompt.substring(0, 150)}...`);
+      console.log(`[getAIResponse] AI 1 originalPrompt: "${ai1.finalPrompt}"`);
+      console.log(`[getAIResponse] AI 1 strengthenedPrompt: "${strengthenedAI1Prompt}"`);
       
       const startTime = Date.now();
       const response = await fetchWithRetry('/api/debate', {
@@ -414,7 +419,8 @@ export default function Home() {
       // Strengthen AI1's system prompt for initial response  
       const strengthenedPrompt = `${ai1.finalPrompt}\n\n重要: あなたはAI 1です。これから始まる討論で、常にあなた独自の性格と価値観を保ってください。相手の影響を受けず、あなた自身の視点で発言してください。`;
       
-      console.log(`[runPlayerDebate] AI 1 initial response with prompt: ${strengthenedPrompt.substring(0, 150)}...`);
+      console.log(`[runPlayerDebate] AI 1 originalPrompt: "${ai1.finalPrompt}"`);
+      console.log(`[runPlayerDebate] AI 1 strengthenedPrompt: "${strengthenedPrompt}"`);
       
       const startTime = Date.now();
       const response = await fetchWithRetry('/api/debate', {
@@ -492,7 +498,8 @@ export default function Home() {
         const strengthenedPrompt = `${currentAi.finalPrompt}\n\n重要: あなたは${senderName}です。相手の論理や発言スタイルに影響されず、常にあなた独自の性格と価値観を保ってください。あなた自身の視点で考え、発言してください。`;
         
         console.log(`[runAIDebate] Turn ${i+1}: ${senderName} speaking`);
-        console.log(`[runAIDebate] ${senderName} prompt: ${strengthenedPrompt.substring(0, 150)}...`);
+        console.log(`[runAIDebate] ${senderName} originalPrompt: "${currentAi.finalPrompt}"`);
+        console.log(`[runAIDebate] ${senderName} strengthenedPrompt: "${strengthenedPrompt}"`);
         
         const startTime = Date.now();
         const response = await fetchWithRetry('/api/debate', {
